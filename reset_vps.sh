@@ -26,6 +26,10 @@ apt-get update -y && apt-get upgrade -y
 echo "Menghapus aplikasi yang terinstall..."
 apt-get purge -y apache2 nginx mysql-server php postfix
 
+# Jangan hapus SSH server, karena kita masih perlu akses SSH
+# Pastikan openssh-server tetap ada agar VPS tetap bisa diakses via SSH
+apt-get install -y openssh-server
+
 # Hapus pengguna yang tidak diperlukan (ubah 'nama_pengguna' sesuai dengan pengguna yang ada)
 echo "Menghapus pengguna yang tidak diperlukan..."
 deluser --remove-home nama_pengguna
@@ -46,14 +50,12 @@ find /var/log -type f -delete
 echo "Menghapus semua database MySQL..."
 rm -rf /var/lib/mysql/*
 
-# Hapus konfigurasi jaringan (opsional, jika ingin reset jaringan)
-echo "Menghapus konfigurasi jaringan..."
-rm -rf /etc/network/interfaces
-rm -rf /etc/netplan/*
+# JANGAN menghapus konfigurasi jaringan agar VPS tetap bisa diakses
 
-# Menghapus direktori konfigurasi aplikasi
-echo "Menghapus konfigurasi aplikasi di /etc/..."
-find /etc/ -name "*" -type f -delete
+# Pastikan layanan SSH tetap berjalan
+echo "Restart SSH dan layanan jaringan..."
+systemctl restart ssh
+systemctl restart networking
 
 # Menghapus cache sistem
 echo "Menghapus cache sistem..."
