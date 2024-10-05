@@ -1,72 +1,96 @@
 #!/bin/bash
 
-# Pastikan script dijalankan sebagai root
-if [ "$(id -u)" -ne 0 ]; then
-   echo "Script ini harus dijalankan sebagai root." 1>&2
-   exit 1
+# Menghentikan script jika ada error
+set -e
+
+# Variabel
+UBUNTU_VERSION="20.04"
+IMAGE_URL="http://cdimage.ubuntu.com/ubuntu-base/releases/$UBUNTU_VERSION/release/ubuntu-base-$UBUNTU_VERSION-base-amd64.tar.gz"
+TARGET_DIR="/mnt/ubuntu"
+DEVICE="/dev/sdX"  # Ganti dengan disk yang sesuai
+HOSTNAME="my-ubuntu"
+TIMEZONE="Asia/Jakarta"
+LOCALE="en_US.UTF-8"
+USERNAME="sabdo"  # Ganti dengan nama user
+PASSWORD="Palon1Xol"  # Ganti dengan password yang diinginkan
+
+# Fungsi untuk menampilkan pesan informasi
+info() {
+    echo -e "\e[32m$*\e[0m"
+}
+
+# Fungsi untuk menampilkan pesan error dan keluar
+error() {
+    echo -e "\e[31m$*\e[0m" >&2
+    exit 1
+}
+
+# Cek apakah script dijalankan sebagai root
+if [ "$EUID" -ne 0 ]; then
+    error "Jalankan script ini sebagai root!"
 fi
 
-# Verifikasi sebelum memulai
-echo "PERINGATAN: Script ini akan menghapus semua data di VPS dan mengembalikan ke kondisi seperti baru."
-read -p "Apakah Anda yakin ingin melanjutkan? [y/N]: " confirm
+# Update dan install dependencies
+info "Memperbarui paket dan menginstall debootstrap..."
+apt update && apt install -y debootstrap gdisk
 
-# Cek apakah pengguna mengonfirmasi dengan 'y' atau 'Y'
-if [[ $confirm != "y" && $confirm != "Y" ]]; then
-   echo "Proses dibatalkan. Tidak ada perubahan yang dilakukan."
-   exit 0
-fi
+# Partisi disk
+info "Memformat disk $DEVICE..."
+sgdisk --zap-all $DEVICE
+sgdisk -n 1:0:+1G -t 1:8300 $DEVICE  # Partisi root
+mkfs.ext4 ${DEVICE}1
+mount ${DEVICE}1 $TARGET_DIR
 
-echo "Mulai proses reset VPS..."
+# Download dan ekstrak Ubuntu base image
+info "Mengunduh dan mengekstrak Ubuntu base image versi $UBUNTU_VERSION..."
+debootstrap --arch=amd64 focal $TARGET_DIR $IMAGE_URL
 
-# Update dan upgrade sistem
-echo "Update dan upgrade sistem..."
-apt-get update -y && apt-get upgrade -y
+# Bind mount beberapa sistem file untuk chroot
+mount --bind /dev $TARGET_DIR/dev
+mount --bind /dev/pts $TARGET_DIR/dev/pts
+mount --bind /proc $TARGET_DIR/proc
+mount --bind /sys $TARGET_DIR/sys
 
-# Hapus aplikasi yang umum diinstall
-echo "Menghapus aplikasi yang terinstall..."
-apt-get purge -y apache2 nginx mysql-server php postfix
+# Mengonfigurasi chroot environment
+info "Mengonfigurasi sistem dasar..."
+chroot $TARGET_DIR /bin/bash <<EOF
+# Set hostname
+echo "$HOSTNAME" > /etc/hostname
 
-# Pastikan openssh-server tetap ada agar VPS tetap bisa diakses via SSH
-apt-get install -y openssh-server
+# Set timezone
+ln -sf /usr/share/zoneinfo/$TIMEZONE /etc/localtime
+dpkg-reconfigure -f noninteractive tzdata
 
-# Hapus pengguna yang tidak diperlukan (ubah 'nama_pengguna' sesuai dengan pengguna yang ada)
-echo "Menghapus pengguna yang tidak diperlukan..."
-deluser --remove-home nama_pengguna
+# Set locale
+apt update
+apt install -y locales
+locale-gen $LOCALE
+update-locale LANG=$LOCALE
 
-# Hapus semua direktori home pengguna lain
-echo "Menghapus direktori home pengguna lain..."
-find /home/* -delete
+# Set up /etc/fstab
+echo "UUID=$(blkid -s UUID -o value ${DEVICE}1) / ext4 errors=remount-ro 0 1" > /etc/fstab
 
-# Hapus semua file di /var/www
-echo "Menghapus file di /var/www/..."
-rm -rf /var/www/*
+# Install kernel dan init system
+apt install -y linux-image-generic grub-pc
 
-# Hapus log sistem
-echo "Membersihkan log sistem..."
-find /var/log -type f -delete
+# Install bootloader
+grub-install $DEVICE
+update-grub
 
-# Hapus database MySQL (jika ada)
-echo "Menghapus semua database MySQL..."
-rm -rf /var/lib/mysql/*
+# Membuat user baru
+useradd -m -s /bin/bash -G sudo $USERNAME
+echo "$USERNAME:$PASSWORD" | chpasswd
 
-# Hapus semua file di /etc (hati-hati, pastikan untuk tidak menghapus file penting)
-echo "Menghapus konfigurasi di /etc..."
-find /etc/* -delete
+# Membersihkan paket yang tidak diperlukan
+apt clean
+EOF
 
-# Pastikan layanan SSH tetap berjalan
-echo "Restart SSH dan layanan jaringan..."
-systemctl restart ssh
-systemctl restart networking
+# Unmount sistem file
+info "Melepas mount point..."
+umount -l $TARGET_DIR/dev/pts
+umount -l $TARGET_DIR/dev
+umount -l $TARGET_DIR/proc
+umount -l $TARGET_DIR/sys
+umount -l $TARGET_DIR
 
-# Menghapus cache sistem
-echo "Menghapus cache sistem..."
-rm -rf /var/cache/*
-
-# Membersihkan paket-paket yang tidak diperlukan
-echo "Membersihkan paket-paket yang tidak diperlukan..."
-apt-get autoremove -y && apt-get clean
-
-# Reboot sistem
-echo "Reboot VPS dalam 10 detik..."
-sleep 10
-reboot
+info "Instalasi Ubuntu $UBUNTU_VERSION selesai. Anda dapat reboot sekarang."
